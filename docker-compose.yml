@@ -1,0 +1,131 @@
+version: '3.8'
+
+services:
+  # Database
+  db:
+    image: postgres:16-alpine
+    container_name: business_intel_db
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: dealers
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  # Cache & Celery broker
+  redis:
+    image: redis:7-alpine
+    container_name: business_intel_redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  # FastAPI Backend
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: business_intel_backend
+    restart: always
+    volumes:
+      - ./backend:/app
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/dealers
+      - REDIS_URL=redis://redis:6379/0
+      - JWT_SECRET=991b3b97037474c165b5d610dad4320b5f596bb7982868dfd6747b85b7116b13
+      - GOOGLE_PLACES_API_KEY=${GOOGLE_PLACES_API_KEY}
+      - LLM_PROVIDER=gemini
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - MOCK_BILLING=true
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+      - redis
+
+  # Celery Background Worker
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: business_intel_worker
+    restart: always
+    command: celery -A app.workers.tasks.celery_app worker --loglevel=info
+    volumes:
+      - ./backend:/app
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/dealers
+      - REDIS_URL=redis://redis:6379/0
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - LLM_PROVIDER=gemini
+    depends_on:
+      - redis
+      - db
+
+  # Next.js Frontend Dashboard
+  web:
+    image: node:20-alpine
+    container_name: business_intel_web
+    restart: always
+    working_dir: /app
+    volumes:
+      - .:/app
+    ports:
+      - "3000:3000"
+    command: sh -c "pnpm install && pnpm dev"
+    environment:
+      - NODE_ENV=development
+      - PORT=3000
+    depends_on:
+      - backend
+
+  # Nginx Gateway
+  nginx:
+    image: nginx:alpine
+    container_name: business_intel_nginx
+    restart: always
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - backend
+      - web
+
+  # Prometheus Monitoring
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: business_intel_prometheus
+    restart: always
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    depends_on:
+      - backend
+
+  # Grafana Dashboard
+  grafana:
+    image: grafana/grafana:latest
+    container_name: business_intel_grafana
+    restart: always
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+
+volumes:
+  postgres_data:
+  redis_data:
+  grafana_data:
